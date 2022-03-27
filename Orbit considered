@@ -1,0 +1,192 @@
+## Import required functions
+import numpy as np
+import matplotlib.pyplot as plt
+from astropy.table import Table
+from astropy.time import Time
+from scipy import interpolate
+import astropy.units as u
+import time
+
+# Read in data 'achievedcont' is the data from 'Idealised Version' with latitudes added using TOPCAT software.
+t = Table.read('achievedcont', format='fits')
+
+# Calculate inclination from star's latitude.
+t['LAT'][np.where(t['LAT'] > 0)] = 90 - t['LAT'][np.where(t['LAT'] > 0)]
+t['LAT'][np.where(t['LAT'] < 0)] = -90 - t['LAT'][np.where(t['LAT'] < 0)]
+t.rename_column('LAT', 'incl')
+
+### SUPERVISOR PROVIDED FUNCTIONS ###
+
+def calc_eccentric_anomaly(M, ecc):
+
+    # use the Newton-Raphson method to determine eccentric anomaly
+    # from mean anomaly and eccentricity
+
+    iterations = 4 # number of iterations to perform
+    if (ecc >= 0.95):
+        iterations = 10 # perform more iterations if eccentricity is very high
+
+    Eo = M + ecc * np.sin(M) + (ecc**2 / M)*np.sin(2*M)    
+    for i in np.arange(iterations):
+        Mo = Eo - ecc * np.sin(Eo)
+        Eo = Eo + (M - Mo) / (1 - ecc*np.cos(Eo))
+        #print(Mo, Eo)
+        
+    return Eo 
+
+def calc_DI_orbit(M, ecc, longasc, argperi, incl, P, dist, mtot):
+
+    # calculate eccentric anomaly from mean anomaly
+    E = np.zeros(len(M))
+    
+    for mval, i in zip(M, np.arange(len(M))):
+        E[i] = calc_eccentric_anomaly(M[i], ecc)
+
+    theta = np.arccos((np.cos(E) - ecc) / (1 - ecc*np.cos(E)))
+
+    mask = E > np.pi
+    theta[mask] = 2*np.pi - theta[mask]
+
+    # calculate DI image position using Thiele-Innes method
+    atot = ((P / 365.25)**2 * mtot)**(1./3.) #/ dist
+
+    A = atot*(np.cos(longasc)*np.cos(argperi) - np.sin(longasc)*np.sin(argperi)*np.cos(incl))
+    B = atot*(np.sin(longasc)*np.cos(argperi) + np.cos(longasc)*np.sin(argperi)*np.cos(incl))
+    F = atot*(-np.cos(longasc)*np.sin(argperi) - np.sin(longasc)*np.cos(argperi)*np.cos(incl))
+    G = atot*(-np.sin(longasc)*np.sin(argperi) + np.cos(longasc)*np.cos(argperi)*np.cos(incl))
+
+    X = np.cos(E) - ecc
+    Y = np.sqrt(1 - ecc**2) * np.sin(E)
+    # Radius as a function of tim (separation on sky as a function of time)
+    R = atot*np.sqrt(X**2 + Y**2)
+    
+    VX = - (2.*np.pi*atot**2*np.sin(E))/((P/365.25)*R)
+    VY = ((2.*np.pi*atot**2*np.cos(E))/((P/365.25)*R))*np.sqrt(1-ecc**2)
+
+    deltadec = A*X + F*Y #/ dist
+    deltara = B*X + G*Y #/ dist
+    
+    onskyrad = (np.sqrt(deltadec**2 + deltara**2)) #/ dist
+
+    deltavdec = (A*VX + F*VY) / atot # in AU / yr
+    deltavra = (B*VX + G*VY) / atot # in AU / yr
+    
+    return onskyrad, deltadec, deltara, deltavdec, deltavra
+    
+def calc_RV_orbit(M, ecc, argperi, P, mtot, m2, incl):
+
+    # calculate RV semi-amplitude
+    P_sec = P * 24. * 3600. # convert period to seconds
+    G_si = 6.674e-11 # in m**3 kg**-1 s**-2
+    G = (G_si / (1000.**3))*1.989e30 # convert to km**3 Msun**-1 s**-2
+    RVKa = ((2*np.pi*G) / P_sec)**(1./3.) * ((m2 * np.sin(incl)) / (np.sqrt(1 - ecc**2)*mtot**(2./3)))
+    
+    # calculate eccentric anomaly from mean anomaly
+    E = np.zeros(len(M))
+    
+    for mval, i in zip(M, np.arange(len(M))):
+        E[i] = calc_eccentric_anomaly(M[i], ecc)
+
+    theta = np.arccos((np.cos(E) - ecc) / (1 - ecc*np.cos(E)))
+
+    mask = E > np.pi
+    theta[mask] = 2*np.pi - theta[mask]
+
+
+    #calculate the true anomaly from the eccentric anomaly E
+    nu = 2. *np.arctan(np.sqrt((1+ecc) / (1-ecc))*np.tan(E/2.))
+    
+    vrv = RVKa*(np.cos(argperi + nu) + ecc*np.cos(argperi))
+    
+    return vrv
+    
+### SUPERVISOR PROVIDED FUNCTIONS OVER ###
+
+# Interpolation Data - PCS
+
+pcs_sep = [0.015, 0.03, 0.05, 0.1, 0.3]
+pcs_3magstar_cont = [1.e-8, 4.e-9, 3.e-9, 2e-9, 7e-10]
+pcs_5magstar_cont = [2.e-8, 1.e-8, 5.e-9, 3e-9, 2e-9]
+pcs_7magstar_cont = [7.e-8, 3.e-8, 2.e-8, 1e-8, 7e-9]
+pcs_9magstar_cont = [3.e-7, 2.e-7, 8.e-8, 5e-8, 3e-8]
+f_4 = interpolate.interp1d(pcs_3magstar_cont, pcs_sep, fill_value='extrapolate')
+f_6 = interpolate.interp1d(pcs_5magstar_cont, pcs_sep, fill_value='extrapolate')
+f_8 = interpolate.interp1d(pcs_7magstar_cont, pcs_sep, fill_value='extrapolate')
+f_10 = interpolate.interp1d(pcs_9magstar_cont, pcs_sep, fill_value='extrapolate')
+
+# Minimum Separations for PCS curves to reach contrast of 1e-10 and 1e-9
+min_sep_9 = [f_4(1e-9), f_6(1e-9), f_8(1e-9), f_10(1e-9)]
+min_sep_10 = [f_4(1e-10), f_6(1e-10), f_8(1e-10), f_10(1e-10)]
+
+# Interpolation Data - Luvoir
+luv_sep = [0.032247617, 0.035469889, 0.038713915, 0.04460058, 0.052454761, 0.061047839, 0.072016019, 0.085624492, 0.09913811, 0.11547163, 0.136399626, 0.157669634, 0.184097947]
+luv_cont = [2.46e-10, 9.40e-11, 4.68e-11, 4.37e-11, 4.26e-11, 4.31e-11, 4.31e-11, 4.36e-11, 4.34e-11, 4.47e-11, 4.52e-11, 4.50e-11, 4.31e-11]
+f_luv = interpolate.interp1d(luv_cont, luv_sep, fill_value='extrapolate')
+
+# Minimum separations
+min_sep_luv_9 = f_luv(1e-9)
+min_sep_luv_10 = f_luv(1e-10)
+
+# Create new AstroPy table for considerng inclination and orbit
+incl_array = np.round(np.array(t['incl']))
+dist_array = np.array(t['distance'])
+mag_array = np.array(t['magnitude'])
+ra = np.array(t['ra'])
+dec = np.array(t['dec'])
+min_sep = np.zeros(len(dist_array))
+sep_table = Table([incl_array, mag_array, dist_array, np.zeros(len(mag_array))-999., ra, dec], names=('inclination', 'magnitude', 'distance', 'min sep', 'ra', 'dec'))
+
+# Indexes of different magnitude contrasts
+ind4 = (np.where((mag_array) < 4.0))[0]
+ind6 = (np.where((mag_array>=4) & (mag_array<6)))[0]
+ind8 = (np.where((mag_array>=6) & (mag_array<8)))[0]
+ind10 = (np.where((mag_array>=8) & (mag_array<10)))[0]
+
+# Calculate the separations for each inclination from -90 - 90 degrees in AU
+inclinations = np.arange(-90, 91)
+separations_predist = []
+for i in range(0, 181):
+    incl = inclinations[i]
+    onskyrad, deltadec, deltara, deltavra, deltavdec = calc_DI_orbit(M_di, ecc, longasc, argperi, incl*(np.pi/180.), P, dist, mtot)
+    separations_predist.append(onskyrad)    
+separations_predist = np.array([separations_predist])
+
+# Calculate percentage of time each star can directly image Earth if PCS considered
+detfrac = np.zeros(len(sep_table))
+
+for row, i in zip(sep_table, np.arange(len(sep_table)+1)):
+    incl_ind = np.where(inclinations == row['inclination'])
+    sep = separations_predist[0, incl_ind, :] / row['distance']
+    if (row['magnitude'] <= 4):
+        min_sep = min_sep_10[0] # / min_sep_9[0] # depends on if considering Earth (min_sep_10) or brighter planet (min_sep_9)
+    elif (row['magnitude'] <= 6):
+        min_sep = min_sep_10[1] # / min_sep_9[0]
+    elif (row['magnitude'] <= 8):
+        min_sep = min_sep_10[2] # / min_sep_9[0]
+    elif (row['magnitude'] <= 10):
+        min_sep = min_sep_10[3] # / min_sep_9[0]
+    else:
+        min_sep = 100 # set to arbitrarily high number
+    row['min sep'] = min_sep
+    ind_detected = np.where(sep >= min_sep)
+    detfrac[i] = len(ind_detected[0]) / 365.
+
+sep_table['detfrac'] = detfrac*100
+ind = np.where(sep_table['detfrac'] > 0.0)
+pcs_table = sep_table[ind] # Create new table for PCS results 
+
+# Calculate percentage of time each star can directly image Earth if LUVOIR considered
+
+detfrac = np.zeros(len(sep_table))
+
+for row, i in zip(sep_table, np.arange(len(sep_table)+1)):
+    incl_ind = np.where(inclinations == row['inclination'])
+    sep = separations_predist[0, incl_ind, :] / row['distance']
+    min_sep = min_sep_luv_10 # / min_luv_9[0] # depends on if considering Earth (min_sep_luv_10) or brighter planet (min_sep_luv_9)
+    row['min sep'] = min_sep
+    ind_detected = np.where(sep >= min_sep)
+    detfrac[i] = len(ind_detected[0]) / 365.
+
+sep_table['detfrac'] = detfrac*100
+ind = np.where(sep_table['detfrac'] > 0.0)
+luvoir_table = sep_table[ind]
