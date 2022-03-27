@@ -1,0 +1,93 @@
+## Import required packages
+
+from astropy.table import Table
+import astropy.units as u
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import interpolate
+from astropy.coordinates import SkyCoord
+
+"""
+PCS contrast at 800-900 nm, vs. reflected light prediction for old Gaia planets.
+-> Data required for interpolation.
+"""
+pcs_sep = [0.015, 0.03, 0.05, 0.1, 0.3]
+pcs_3magstar_cont = [1.e-8, 4.e-9, 3.e-9, 2e-9, 7e-10]
+pcs_5magstar_cont = [2.e-8, 1.e-8, 5.e-9, 3e-9, 2e-9]
+pcs_7magstar_cont = [7.e-8, 3.e-8, 2.e-8, 1e-8, 7e-9]
+pcs_9magstar_cont = [3.e-7, 2.e-7, 8.e-8, 5e-8, 3e-8]
+
+# Create interpolation functions
+f_4 = interpolate.interp1d(pcs_sep, pcs_3magstar_cont)
+f_6 = interpolate.interp1d(pcs_sep, pcs_5magstar_cont)
+f_8 = interpolate.interp1d(pcs_sep, pcs_7magstar_cont)
+f_10 = interpolate.interp1d(pcs_sep, pcs_9magstar_cont)
+
+t = Table.read('truncated_data.fits', format='fits') # Where 'truncated_data.fits' is the GAIA catalogues of nearby stars.
+
+# Assigning required data from 't' AstroPy table to variables.
+parallax = (t['parallax'])/1000
+distance = 1/parallax
+ra = t['ra']
+dec = t['dec']
+
+# Determining the apparent magnitude of Sun as viewed from each star
+sun_mag = 4.83 # Absolute magnitude of the Sun
+m = sun_mag + (5 * np.log10(distance/10))
+
+# Creating new AstroPy table 'newt' with only required information from t and additional columns of magnitude, distance and contrast
+newt = Table([parallax, m, np.zeros(len(parallax))-999., distance, ra, dec], names=('parallax', 'magnitude', 'contrast', 'distance', 'ra', 'dec'))
+
+# Creating contrast variable
+contrast = np.array(newt['contrast'])
+
+# Indexes for each magnitude range:
+ind4 = np.where(newt['magnitude'] < 4.0)
+ind6 = np.where((newt['magnitude']>=4) & (newt['magnitude']<6))
+ind8 = np.where((newt['magnitude']>=6) & (newt['magnitude']<8))
+ind10 = np.where((newt['magnitude']>=8) & (newt['magnitude']<10))
+
+# Selecting just data for correct mag. range
+plx_4 = parallax[ind4]
+contrast_4 = contrast[ind4]
+
+plx_6 = parallax[ind6]
+contrast_6 = contrast[ind6]
+
+plx_8 = parallax[ind8]
+contrast_8 = contrast[ind8]
+
+plx_10 = parallax[ind10]
+contrast_10 = contrast[ind10]
+
+# Setting values for data that falls outside bounds
+greater4 = np.where(plx_4 > 0.3)
+less4 = np.where(plx_4 < 0.3)
+contrast_4[greater4] = 7e-10
+
+greater6 = np.where(plx_6 > 0.3)
+less6 = np.where(plx_6 < 0.3)
+contrast_6[greater6] = 2e-9
+
+greater8 = np.where(plx_8 > 0.3)
+less8 = np.where(plx_8 < 0.3)
+contrast_8[greater8] = 7e-9
+
+greater10 = np.where(plx_10 > 0.3)
+less10 = np.where(plx_10 < 0.3)
+lower10 = np.where(plx_10 > 0.015)
+contrast_10[greater10] = 3e-8
+contrast_10[lower10] = 3e-7
+
+# Interpolate at just those values within bounds
+
+contrast_4[less4] = f_4(plx_4[less4])
+contrast_6[less6] = f_6(plx_6[less6])
+contrast_8[less8] = f_8(plx_8[less8])
+contrast_10[less10][lower10] = f_10(plx_10[less10][lower10])
+
+# Replace contrast data in AstroPy data with calculated contrasts
+newt['contrast'][ind4] = contrast_4
+newt['contrast'][ind6] = contrast_6
+newt['contrast'][ind8] = contrast_8
+newt['contrast'][ind10] = contrast_10
